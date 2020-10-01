@@ -1,0 +1,3 @@
+[submodule "BSFilter"]
+	path = BSFilter
+	url = https://github.com/Trel725/BSFilter.git

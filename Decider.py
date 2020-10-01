@@ -49,7 +49,7 @@ class Decider(object):
     decision for the given set of spectra"""
 
     def __init__(self, nnmodel, x_train, y_train,
-                 prior_compl=0.5,
+                 prior_positive=0.5,
                  lmbd_fp=1,
                  lmbd_fn=1,
                  epsilon=0.1,
@@ -57,7 +57,7 @@ class Decider(object):
                  n_samples_prediction=50):
         ''' 
         nnmodel - tf.keras model that maps input spectra into 1D embeddings
-        prior_compl - compl prior probability
+        prior_positive - positive prior probability
         lmbd_fp - loss of false positive error
         lmbd_fn - loss of false negative error
         epsilon - loss of "do not know" decision
@@ -67,15 +67,15 @@ class Decider(object):
         super(Decider, self).__init__()
 
         self.nnmodel = nnmodel
-        self.prior_compl = prior_compl
-        self.prior_noncompl = 1 - self.prior_compl
+        self.prior_positive = prior_positive
+        self.prior_negative = 1 - self.prior_positive
         self.lmbd_fn = lmbd_fn
         self.lmbd_fp = lmbd_fp
         self.epsilon = epsilon
 
-        self.theta_compl = (self.prior_noncompl / self.prior_compl) * \
+        self.theta_positive = (self.prior_negative / self.prior_positive) * \
             (self.lmbd_fp - self.epsilon) / self.epsilon
-        self.theta_noncompl = (self.prior_compl / self.prior_noncompl) * \
+        self.theta_negative = (self.prior_positive / self.prior_negative) * \
             (self.lmbd_fn - self.epsilon) / self.epsilon
 
         self.params = {}
@@ -91,76 +91,76 @@ class Decider(object):
         self.params['convergence_n_repeat'] = 15
         self.params['convergence_n_last'] = 3
 
-        self.emb_compl = [self.nnmodel.predict(x_train)[y_train == 0]
-                          for i in np.arange(self.params['n_samples_reference'])]
-        self.emb_noncompl = [self.nnmodel.predict(x_train)[y_train == 1]
+        self.emb_positive = [self.nnmodel.predict(x_train)[y_train == 0]
+                             for i in np.arange(self.params['n_samples_reference'])]
+        self.emb_negative = [self.nnmodel.predict(x_train)[y_train == 1]
                              for i in np.arange(self.params['n_samples_reference'])]
 
-        self.emb_compl = np.array(self.emb_compl).flatten()
-        self.emb_noncompl = np.array(self.emb_noncompl).flatten()
+        self.emb_positive = np.array(self.emb_positive).flatten()
+        self.emb_negative = np.array(self.emb_negative).flatten()
 
-        self.compl_med = np.median(self.emb_compl)
-        self.noncompl_med = np.median(self.emb_noncompl)
-        self.compl_kde = gaussian_kde(self.emb_compl)
-        self.noncompl_kde = gaussian_kde(self.emb_noncompl)
+        self.positive_med = np.median(self.emb_positive)
+        self.negative_med = np.median(self.emb_negative)
+        self.positive_kde = gaussian_kde(self.emb_positive)
+        self.negative_kde = gaussian_kde(self.emb_negative)
 
-        self.endgrid = max(np.percentile(self.emb_compl, 99.99),
-                           np.percentile(self.emb_noncompl, 99.99))
+        self.endgrid = max(np.percentile(self.emb_positive, 99.99),
+                           np.percentile(self.emb_negative, 99.99))
         self.startgrid = min(np.percentile(
-            self.emb_compl, 0.01), np.percentile(self.emb_noncompl, 0.01))
+            self.emb_positive, 0.01), np.percentile(self.emb_negative, 0.01))
         self.fullgrid = np.linspace(self.startgrid, self.endgrid, 1000)
 
-        self.compl_dens = self.compl_kde(self.fullgrid)
-        self.noncompl_dens = self.noncompl_kde(self.fullgrid)
+        self.positive_dens = self.positive_kde(self.fullgrid)
+        self.negative_dens = self.negative_kde(self.fullgrid)
 
-        self.iqr_compl = np.abs(np.quantile(
-            self.emb_compl, 0.75) - np.quantile(self.emb_compl, 0.25))
-        self.iqr_noncompl = np.abs(np.quantile(
-            self.emb_compl, 0.75) - np.quantile(self.emb_compl, 0.25))
+        self.iqr_positive = np.abs(np.quantile(
+            self.emb_positive, 0.75) - np.quantile(self.emb_positive, 0.25))
+        self.iqr_negative = np.abs(np.quantile(
+            self.emb_positive, 0.75) - np.quantile(self.emb_positive, 0.25))
 
-        self.spline_compl = interpolate.InterpolatedUnivariateSpline(
-            self.fullgrid, self.compl_kde(self.fullgrid))
-        self.spline_noncompl = interpolate.InterpolatedUnivariateSpline(
-            self.fullgrid, self.noncompl_kde(self.fullgrid))
+        self.spline_positive = interpolate.InterpolatedUnivariateSpline(
+            self.fullgrid, self.positive_kde(self.fullgrid))
+        self.spline_negative = interpolate.InterpolatedUnivariateSpline(
+            self.fullgrid, self.negative_kde(self.fullgrid))
 
         self.interval_a = min(
-            [self.compl_med - self.iqr_compl, self.noncompl_med - self.iqr_noncompl])
+            [self.positive_med - self.iqr_positive, self.negative_med - self.iqr_negative])
         self.interval_b = max(
-            [self.compl_med + self.iqr_compl, self.noncompl_med + self.iqr_noncompl])
+            [self.positive_med + self.iqr_positive, self.negative_med + self.iqr_negative])
 
-        self.last_mral_compl = None
-        self.last_mral_noncompl = None
+        self.last_mral_positive = None
+        self.last_mral_negative = None
         self.last_emb = None
 
-    def update_params(self, prior_compl=None, lmbd_fp=None, lmbd_fn=None, epsilon=None):
+    def update_params(self, prior_positive=None, lmbd_fp=None, lmbd_fn=None, epsilon=None):
         '''
         updates decider parameters like losses and priors
         '''
-        if prior_compl is not None:
-            self.prior_compl = prior_compl
-            self.prior_noncompl = 1 - self.prior_compl
+        if prior_positive is not None:
+            self.prior_positive = prior_positive
+            self.prior_negative = 1 - self.prior_positive
         if lmbd_fn is not None:
             self.lmbd_fn = lmbd_fn
         if lmbd_fp is not None:
             self.lmbd_fp = lmbd_fp
         if epsilon is not None:
             self.epsilon = epsilon
-        self.theta_compl = (self.prior_noncompl / self.prior_compl) * \
+        self.theta_positive = (self.prior_negative / self.prior_positive) * \
             (self.lmbd_fp - self.epsilon) / self.epsilon
-        self.theta_noncompl = (self.prior_compl / self.prior_noncompl) * \
+        self.theta_negative = (self.prior_positive / self.prior_negative) * \
             (self.lmbd_fn - self.epsilon) / self.epsilon
 
-    def risk_compl(self, lr):
+    def risk_positive(self, lr):
         # risk function of the decision +
-        return self.lmbd_fp * (1 / (1 + lr * (self.prior_compl / self.prior_noncompl)))
+        return self.lmbd_fp * (1 / (1 + lr * (self.prior_positive / self.prior_negative)))
 
     def risk_dontknow(self, lr):
         # risk function of the decision ?
         return np.ones_like(lr) * self.epsilon
 
-    def risk_noncompl(self, lr):
+    def risk_negative(self, lr):
         # risk function of the decision -
-        return self.lmbd_fn * (1 / (1 + lr * (self.prior_noncompl / self.prior_compl)))
+        return self.lmbd_fn * (1 / (1 + lr * (self.prior_negative / self.prior_positive)))
 
     def embed(self, data, mult=50):
         # maps spectra to the embeddings with nnmodel
@@ -175,9 +175,9 @@ class Decider(object):
         # remove outliers that are further from origin than reference
         # distributions plus their IQR
         crit_a = np.median(sample, axis=1) > max(
-            [self.compl_med + self.iqr_compl, self.noncompl_med + self.iqr_noncompl])
+            [self.positive_med + self.iqr_positive, self.negative_med + self.iqr_negative])
         crit_b = np.median(sample, axis=1) < min(
-            [self.compl_med - self.iqr_compl, self.noncompl_med - self.iqr_noncompl])
+            [self.positive_med - self.iqr_positive, self.negative_med - self.iqr_negative])
         print(crit_a.shape)
         sample = sample[~(crit_a | crit_b)]
         print(f"{(crit_a | crit_b).sum()}/{sample.shape[0]+(crit_a | crit_b).sum()} bad samples found")
@@ -190,66 +190,66 @@ class Decider(object):
 
         data: list of numpy arrays of spectra embeddings
         '''
-        lr_compl = []
-        lr_noncompl = []
+        lr_positive = []
+        lr_negative = []
         for arr in data:
             kdes = np.apply_along_axis(gaussian_kde, axis=1, arr=arr)
-            likelihoods_compl = np.array(
-                [np.trapz(k(self.fullgrid) * self.compl_dens, x=self.fullgrid) for k in kdes])
-            likelihoods_noncompl = np.array(
-                [np.trapz(k(self.fullgrid) * self.noncompl_dens, x=self.fullgrid) for k in kdes])
+            likelihoods_positive = np.array(
+                [np.trapz(k(self.fullgrid) * self.positive_dens, x=self.fullgrid) for k in kdes])
+            likelihoods_negative = np.array(
+                [np.trapz(k(self.fullgrid) * self.negative_dens, x=self.fullgrid) for k in kdes])
 
-            lr_compl.append(likelihoods_compl / likelihoods_noncompl)
-            lr_noncompl.append(likelihoods_noncompl / likelihoods_compl)
-        return tuple(lr_compl), tuple(lr_noncompl)
+            lr_positive.append(likelihoods_positive / likelihoods_negative)
+            lr_negative.append(likelihoods_negative / likelihoods_positive)
+        return tuple(lr_positive), tuple(lr_negative)
 
-    def decide(self, lr_compl, lr_noncompl):
+    def decide(self, lr_positive, lr_negative):
         '''
         main decision routine
-        lr_compl - list of numpy arrays of likelihood ratios +/-
-        lr_noncompl - list of numpy arrays of likelihood rations -/+
+        lr_positive - list of numpy arrays of likelihood ratios +/-
+        lr_negative - list of numpy arrays of likelihood rations -/+
         '''
 
-        # get MRAL for compl and noncompl cases
-        mral_compl = bootstrap_lr(
-            lr_compl, trunc=self.params['truncation'], n=self.params['n_bootstrap'])
-        mral_noncompl = bootstrap_lr(
-            lr_noncompl, trunc=self.params['truncation'], n=self.params['n_bootstrap'])
+        # get MRAL for positive and negative cases
+        mral_positive = bootstrap_lr(
+            lr_positive, trunc=self.params['truncation'], n=self.params['n_bootstrap'])
+        mral_negative = bootstrap_lr(
+            lr_negative, trunc=self.params['truncation'], n=self.params['n_bootstrap'])
 
-        self.last_mral_compl = mral_compl
-        self.last_mral_noncompl = mral_noncompl
+        self.last_mral_positive = mral_positive
+        self.last_mral_negative = mral_negative
 
         # print some debug information
-        print("MRAL+: [{:.3f}, {:.3f}]".format(np.quantile(mral_compl, self.params["mral_interval_a"]),
-                                               np.quantile(mral_compl, self.params["mral_interval_b"])))
-        print("MRAL-: [{:.3f}, {:.3f}]".format(np.quantile(mral_noncompl, self.params["mral_interval_a"]),
-                                               np.quantile(mral_noncompl, self.params["mral_interval_b"])))
-        print("th+: {}, th-: {}".format(self.theta_compl, self.theta_noncompl))
+        print("MRAL+: [{:.3f}, {:.3f}]".format(np.quantile(mral_positive, self.params["mral_interval_a"]),
+                                               np.quantile(mral_positive, self.params["mral_interval_b"])))
+        print("MRAL-: [{:.3f}, {:.3f}]".format(np.quantile(mral_negative, self.params["mral_interval_a"]),
+                                               np.quantile(mral_negative, self.params["mral_interval_b"])))
+        print("th+: {}, th-: {}".format(self.theta_positive, self.theta_negative))
 
         # 1. if whole distribution is far enough from threshold
         # decision is simple
-        if np.quantile(mral_compl, self.params['mral_interval_a']) > self.theta_compl:
-            return "COMPL"
+        if np.quantile(mral_positive, self.params['mral_interval_a']) > self.theta_positive:
+            return "POSITIVE"
 
-        if np.quantile(mral_noncompl, self.params['mral_interval_a']) > self.theta_noncompl:
-            return "NONCOMPL"
+        if np.quantile(mral_negative, self.params['mral_interval_a']) > self.theta_negative:
+            return "NEGATIVE"
 
-        # 2. if theta is inside mral_compl, need to analyze it in more details
-        if (self.theta_compl < np.quantile(mral_compl, self.params['mral_interval_b']) and
-                self.theta_compl > np.quantile(mral_compl, self.params['mral_interval_a'])):
-            return self.analyze_deltarisk(lr_compl,
-                                          self.theta_compl,
-                                          self.risk_compl,
+        # 2. if theta is inside mral_positive, need to analyze it in more details
+        if (self.theta_positive < np.quantile(mral_positive, self.params['mral_interval_b']) and
+                self.theta_positive > np.quantile(mral_positive, self.params['mral_interval_a'])):
+            return self.analyze_deltarisk(lr_positive,
+                                          self.theta_positive,
+                                          self.risk_positive,
                                           self.risk_dontknow,
-                                          "COMPL")
-        # similarly if theta is inside mral_noncompl
-        if (self.theta_noncompl < np.quantile(mral_noncompl, self.params['mral_interval_b']) and
-                self.theta_noncompl > np.quantile(mral_noncompl, self.params['mral_interval_a'])):
-            return self.analyze_deltarisk(lr_noncompl,
-                                          self.theta_noncompl,
-                                          self.risk_noncompl,
+                                          "POSITIVE")
+        # similarly if theta is inside mral_negative
+        if (self.theta_negative < np.quantile(mral_negative, self.params['mral_interval_b']) and
+                self.theta_negative > np.quantile(mral_negative, self.params['mral_interval_a'])):
+            return self.analyze_deltarisk(lr_negative,
+                                          self.theta_negative,
+                                          self.risk_negative,
                                           self.risk_dontknow,
-                                          "NONCOMPL")
+                                          "NEGATIVE")
 
         # 3. else we purely dont now
         return "DON'T KNOW"
@@ -271,7 +271,7 @@ class Decider(object):
             lr, theta, risk, risk_dontknow)
         if rel_delta_risk < self.params['delta_risk_max']:
             if dontknow:
-                return "DONT KNOW"
+                return "DON'T KNOW"
             else:
                 return label
         else:
@@ -309,7 +309,7 @@ class Decider(object):
         mean_risk_dontknow = np.trapz(risk_dontknow(grid) * dens_mral, x=grid)
 
         if mean_risk_decision < mean_risk_dontknow:
-            delta_risk = self.risk_compl(
+            delta_risk = self.risk_positive(
                 grid[:krit_idx]) - self.risk_dontknow(grid[:krit_idx])
             delta_mean = np.trapz(
                 dens_mral[:krit_idx] * delta_risk, x=grid[:krit_idx])
@@ -317,7 +317,7 @@ class Decider(object):
             return rel_delta, False
         else:
             delta_risk = self.risk_dontknow(
-                grid[krit_idx:]) - self.risk_compl(grid[krit_idx:])
+                grid[krit_idx:]) - self.risk_positive(grid[krit_idx:])
             delta_mean = np.trapz(
                 dens_mral[krit_idx:] * delta_risk, x=grid[krit_idx:])
             rel_delta = delta_mean / mean_risk_dontknow
@@ -326,8 +326,9 @@ class Decider(object):
     def get_delta_convergence(self, lr, theta, risk, risk_dontknow):
         '''
    .    Examines whether delta risk has converged, i.e. whether additional
-        measurements of the same sample still makes sense. If multiple samples were
-        given only last one is analyzed, i.e.  it is assumed that convergence of previous sample
+        measurements of the same sample still makes sense. If multiple 
+        samples were given only last one is analyzed, i.e.  
+        it is assumed that convergence of previous sample
         was already ensured before adding new sample
         lr - list of numpy arrays of likelihood ratios
         theta - current decision threshold
@@ -357,20 +358,22 @@ class Decider(object):
         spectra from single sample. Pass [sample] if want to predict spectr from one sample.
         '''
         if not isinstance(samples, list):
-            raise ValueError("sample must be a list of the arrays, not a single array!")
-        emb = map(lambda x: self.embed(x, mult=self.params['n_samples_prediction']), samples)
+            raise ValueError(
+                "sample must be a list of the arrays, not a single array!")
+        emb = map(lambda x: self.embed(
+            x, mult=self.params['n_samples_prediction']), samples)
         emb = tuple(map(self.remove_bad_spectra, emb))
-        lr_compl, lr_noncompl = self.likelihood_ratio(emb)
+        lr_positive, lr_negative = self.likelihood_ratio(emb)
         self.last_emb = emb
-        print(self.decide(lr_compl, lr_noncompl))
+        print(self.decide(lr_positive, lr_negative))
 
     def visualize_sample(self):
         '''
         Plots distribution of the sample together with reference distibutions
         '''
-        sns.distplot(self.emb_compl, label="COMPL",
+        sns.distplot(self.emb_positive, label="POSITIVE",
                      hist=False, kde_kws={"shade": True})
-        sns.distplot(self.emb_noncompl, label="NONCOMPL",
+        sns.distplot(self.emb_negative, label="NEGATIVE",
                      hist=False, kde_kws={"shade": True})
         for idx, sample in enumerate(self.last_emb):
             sns.distplot(sample.flatten(), label=f"SAMPLE{idx}",
@@ -378,26 +381,28 @@ class Decider(object):
 
     def visualize_intervals(self):
         grid = np.arange(self.interval_a, self.interval_b, 0.01)
-        plt.plot(grid, self.spline_compl(grid), label="+")
-        plt.plot(grid, self.spline_noncompl(grid), label="−")
+        plt.plot(grid, self.spline_positive(grid), label="+")
+        plt.plot(grid, self.spline_negative(grid), label="−")
 
-        theta_compl_idx = np.argmin(np.abs(self.theta_compl -
-                                           (self.spline_compl(grid) / self.spline_noncompl(grid))))
-        theta_noncompl_idx = np.argmin(np.abs(self.theta_noncompl -
-                                              (self.spline_noncompl(grid) / self.spline_compl(grid))))
+        theta_positive_idx = np.argmin(np.abs(self.theta_positive -
+                                              (self.spline_positive(grid) / self.spline_negative(grid))))
+        theta_negative_idx = np.argmin(np.abs(self.theta_negative -
+                                              (self.spline_negative(grid) / self.spline_positive(grid))))
 
-        plt.axvline(x=grid[theta_compl_idx], color="k", linewidth=0.5)
-        plt.axvline(x=grid[theta_noncompl_idx], color="k", linewidth=0.5)
+        plt.axvline(x=grid[theta_positive_idx], color="k", linewidth=0.5)
+        plt.axvline(x=grid[theta_negative_idx], color="k", linewidth=0.5)
 
-        plt.fill_between(grid[:theta_noncompl_idx], self.spline_compl(grid[:theta_noncompl_idx]), color="r")
-        plt.fill_between(grid[theta_compl_idx:], self.spline_noncompl(grid[theta_compl_idx:]), color="b")
-        print(f"th+{self.theta_compl:.3f}; th-{self.theta_noncompl:.3f}")
+        plt.fill_between(grid[:theta_negative_idx], self.spline_positive(
+            grid[:theta_negative_idx]), color="r")
+        plt.fill_between(grid[theta_positive_idx:], self.spline_negative(
+            grid[theta_positive_idx:]), color="b")
+        print(f"th+{self.theta_positive:.3f}; th-{self.theta_negative:.3f}")
         plt.legend()
-        # plt.fill_between(grid[theta_noncompl_idx:theta_compl_idx],
-        #                        self.spline_compl(grid[theta_noncompl_idx:theta_compl_idx]), color="g", alpha=0.5)
+        # plt.fill_between(grid[theta_negative_idx:theta_positive_idx],
+        #                        self.spline_positive(grid[theta_negative_idx:theta_positive_idx]), color="g", alpha=0.5)
 
-        # plt.fill_between(grid[theta_noncompl_idx:theta_compl_idx],
-        #                        self.spline_noncompl(grid[theta_noncompl_idx:theta_compl_idx]), color="orange", alpha=0.5)
+        # plt.fill_between(grid[theta_negative_idx:theta_positive_idx],
+        #                        self.spline_negative(grid[theta_negative_idx:theta_positive_idx]), color="orange", alpha=0.5)
 
     def get_metrics(self):
         '''
@@ -408,32 +413,33 @@ class Decider(object):
         '''
         grid = np.arange(self.interval_a, self.interval_b, 0.01)
 
-        theta_compl_idx = np.argmin(np.abs(self.theta_compl -
-                                           (self.spline_compl(grid) / self.spline_noncompl(grid))))
-        theta_noncompl_idx = np.argmin(np.abs(self.theta_noncompl -
-                                              (self.spline_noncompl(grid) / self.spline_compl(grid))))
+        theta_positive_idx = np.argmin(np.abs(self.theta_positive -
+                                              (self.spline_positive(grid) / self.spline_negative(grid))))
+        theta_negative_idx = np.argmin(np.abs(self.theta_negative -
+                                              (self.spline_negative(grid) / self.spline_positive(grid))))
 
-        fn_prob = np.trapz(self.spline_compl(
-            grid[:theta_noncompl_idx]), x=grid[:theta_noncompl_idx])
-        tn_prob = np.trapz(self.spline_noncompl(
-            grid[:theta_noncompl_idx]), x=grid[:theta_noncompl_idx])
+        fn_prob = np.trapz(self.spline_positive(
+            grid[:theta_negative_idx]), x=grid[:theta_negative_idx])
+        tn_prob = np.trapz(self.spline_negative(
+            grid[:theta_negative_idx]), x=grid[:theta_negative_idx])
 
-        fp_prob = np.trapz(self.spline_noncompl(
-            grid[theta_compl_idx:]), x=grid[theta_compl_idx:])
-        tp_prob = np.trapz(self.spline_compl(
-            grid[theta_compl_idx:]), x=grid[theta_compl_idx:])
+        fp_prob = np.trapz(self.spline_negative(
+            grid[theta_positive_idx:]), x=grid[theta_positive_idx:])
+        tp_prob = np.trapz(self.spline_positive(
+            grid[theta_positive_idx:]), x=grid[theta_positive_idx:])
 
-        rej_prob_compl = np.trapz(self.spline_compl(grid[theta_noncompl_idx:theta_compl_idx]),
-                                  x=grid[theta_noncompl_idx:theta_compl_idx])
+        rej_prob_positive = np.trapz(self.spline_positive(grid[theta_negative_idx:theta_positive_idx]),
+                                     x=grid[theta_negative_idx:theta_positive_idx])
 
-        rej_prob_noncompl = np.trapz(self.spline_noncompl(grid[theta_noncompl_idx:theta_compl_idx]),
-                                     x=grid[theta_noncompl_idx:theta_compl_idx])
+        rej_prob_negative = np.trapz(self.spline_negative(grid[theta_negative_idx:theta_positive_idx]),
+                                     x=grid[theta_negative_idx:theta_positive_idx])
 
-        P_FN = self.prior_compl * fn_prob / (fn_prob + tn_prob)
-        P_FP = self.prior_noncompl * fp_prob / (fp_prob + tp_prob)
-        P_rej = rej_prob_compl * self.prior_compl + rej_prob_noncompl * self.prior_noncompl
+        P_FN = self.prior_positive * fn_prob / (fn_prob + tn_prob)
+        P_FP = self.prior_negative * fp_prob / (fp_prob + tp_prob)
+        P_rej = rej_prob_positive * self.prior_positive + \
+            rej_prob_negative * self.prior_negative
         print(
-            f"P(FN): {P_FN:.3f}; P(FP): {P_FP:.3f}; " 
+            f"P(FN): {P_FN:.3f}; P(FP): {P_FP:.3f}; "
             f"P(rej): {P_rej:.3f}")
         return dict(P_FN=P_FN, P_FP=P_FP, P_rej=P_FP)
 #%%

@@ -1,62 +1,72 @@
 import numpy as np
-import seaborn as sns
 import pandas as pd
-from custom_utils import norm_func
 import matplotlib.pyplot as plt
-from custom_utils import cuda_memgrowth
 from tensorflow.keras.models import load_model
 from BSFilter2 import BSFilter
 import glob
 from Decider import Decider
+import os
+
+
+def cuda_memgrowth():
+    # needed to initialize CUDA
+    import tensorflow as tf
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        try:
+            # Currently, memory growth needs to be the same across GPUs
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            logical_gpus = tf.config.experimental.list_logical_devices('GPU')
+            print(len(gpus), "Physical GPUs,", len(
+                logical_gpus), "Logical GPUs")
+        except RuntimeError as e:
+            # Memory growth must be set before GPUs have been initialized
+            print(e)
+
+
 cuda_memgrowth()
 
 
-#%%
-nnmodel = load_model("/home/user/Documents/projects/dna_complement/main_model_final.h5",
+def norm_func(x, a=0, b=1):
+    # function, applied to each spectrum
+    return ((b - a) * (x - min(x))) / (max(x) - min(x)) + a
+
+
+def load_by_parts(fname):
+    # loads array, splitted into multiple files
+    # needseded due to GitHub limit on file size
+    parts = []
+    for idx in range(100):
+        file = f"{fname}_{idx:02d}.npy"
+        if os.path.isfile(file):
+            p = np.load(file)
+            parts.append(p)
+        else:
+            break
+    if len(parts) == 0:
+        raise ValueError("No such files found!")
+
+    return np.concatenate(parts, axis=0)
+
+
+
+nnmodel = load_model("./data/model.h5",
                      custom_objects={"BSFilter": BSFilter})
-x_train = np.load("/home/user/Documents/projects/dna_complement/X_train.npy"),
-y_train = np.load("/home/user/Documents/projects/dna_complement/Y_train.npy")
+x_train = load_by_parts("./data/X_train")
+y_train = np.load("./data/Y_train.npy")
 
 #%%
 decider = Decider(nnmodel, x_train, y_train,
-                  epsilon=0.075, prior_compl=0.5, n_samples_prediction=200, n_samples_reference=20)
+                  epsilon=0.075, prior_positive=0.5, n_samples_prediction=200, n_samples_reference=20)
 
-#decider.update_params(lmbd_fn=3, lmbd_fp=1, epsilon=0.1)
 
 #%%
-for file in sorted(glob.glob("/home/user/Documents/projects/dna_complement/unknown/unknown/joined/9_pr.csv")):
+for file in sorted(glob.glob("./data/unknown/*.csv")):
     print(file)
     sample = pd.read_csv(file)
     sample = sample.apply(norm_func, axis=1).values[:, :2089]
     decider.decide_samples([sample])
-    #decider.visualize_sample()
-    #plt.show()
+    decider.visualize_sample()
+    plt.show()
     print("-" * 10 + "\n")
-
-#%%
-style1((4.5,3))
-
-decider.visualize_intervals()
-plt.xlabel("z")
-plt.ylabel("p")
-
-grid = np.arange(decider.startgrid, decider.endgrid, 0.01)
-theta_compl_idx = np.argmin(np.abs(decider.theta_compl -
-                                           (decider.spline_compl(grid) / decider.spline_noncompl(grid))))
-theta_noncompl_idx = np.argmin(np.abs(decider.theta_noncompl -
-                                              (decider.spline_noncompl(grid) / decider.spline_compl(grid))))
-        
-plt.xticks([-2, -1, 0, 1, 2])
-plt.axvline(grid[theta_noncompl_idx], linewidth=0.9, c="k")
-plt.axvline(grid[theta_compl_idx], linewidth=0.9, c="k")
-
-
-plt.text(grid[theta_compl_idx]-0.05, -0.1, r"$\theta_{+}$", size=12)
-plt.text(grid[theta_noncompl_idx]-0.05, -0.1, r"$\theta_{−}$", size=12)
-
-
-plt.tight_layout(0.25)
-
-plt.savefig("densities.png", dpi=300)
-
-
