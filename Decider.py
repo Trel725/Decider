@@ -178,7 +178,6 @@ class Decider(object):
             [self.positive_med + self.iqr_positive, self.negative_med + self.iqr_negative])
         crit_b = np.median(sample, axis=1) < min(
             [self.positive_med - self.iqr_positive, self.negative_med - self.iqr_negative])
-        print(crit_a.shape)
         sample = sample[~(crit_a | crit_b)]
         print(f"{(crit_a | crit_b).sum()}/{sample.shape[0]+(crit_a | crit_b).sum()} bad samples found")
         return sample
