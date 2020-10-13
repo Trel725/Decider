@@ -2,6 +2,8 @@ import numpy as np
 import numba
 from scipy.stats import gaussian_kde
 from scipy import interpolate
+from scipy.integrate import quad
+from scipy.optimize import brentq
 import seaborn as sns
 import matplotlib.pyplot as plt
 
@@ -116,7 +118,7 @@ class Decider(object):
         self.iqr_positive = np.abs(np.quantile(
             self.emb_positive, 0.75) - np.quantile(self.emb_positive, 0.25))
         self.iqr_negative = np.abs(np.quantile(
-            self.emb_positive, 0.75) - np.quantile(self.emb_positive, 0.25))
+            self.emb_negative, 0.75) - np.quantile(self.emb_negative, 0.25))
 
         self.spline_positive = interpolate.InterpolatedUnivariateSpline(
             self.fullgrid, self.positive_kde(self.fullgrid))
@@ -410,28 +412,39 @@ class Decider(object):
         false detection rate i.e. P(FP|decision=P) and rejection rate,
         i.e. percent of samples rejected
         '''
-        grid = np.arange(self.interval_a, self.interval_b, 0.01)
+        def lr_positive(x):
+            return self.spline_positive(x) / self.spline_negative(x)
 
-        theta_positive_idx = np.argmin(np.abs(self.theta_positive -
-                                              (self.spline_positive(grid) / self.spline_negative(grid))))
-        theta_negative_idx = np.argmin(np.abs(self.theta_negative -
-                                              (self.spline_negative(grid) / self.spline_positive(grid))))
+        def lr_negative(x):
+            return self.spline_negative(x) / self.spline_positive(x)
+        
+        iqr = (self.iqr_positive + self.iqr_negative)/2
+        
+        try:
+            theta_positive = brentq(lambda x: lr_positive(
+                x) - self.theta_positive, self.interval_a - 0.5 * iqr, self.interval_b + 0.5 * iqr)
+        except:
+            theta_positive = self.interval_a - 0.5 * iqr
+        try:
+            theta_negative = brentq(lambda x: lr_negative(
+                x) - self.theta_negative, self.interval_a - 0.5 * iqr, self.interval_b + 0.5 * iqr)
+        except:
+            theta_negative = self.interval_b + 0.5 * iqr
 
-        fn_prob = np.trapz(self.spline_positive(
-            grid[:theta_negative_idx]), x=grid[:theta_negative_idx])
-        tn_prob = np.trapz(self.spline_negative(
-            grid[:theta_negative_idx]), x=grid[:theta_negative_idx])
+        fn_prob = quad(self.spline_positive,
+                       self.interval_a, theta_negative)[0]
+        tn_prob = quad(self.spline_negative,
+                       self.interval_a, theta_negative)[0]
 
-        fp_prob = np.trapz(self.spline_negative(
-            grid[theta_positive_idx:]), x=grid[theta_positive_idx:])
-        tp_prob = np.trapz(self.spline_positive(
-            grid[theta_positive_idx:]), x=grid[theta_positive_idx:])
+        fp_prob = quad(self.spline_negative,
+                       theta_positive, self.interval_b)[0]
+        tp_prob = quad(self.spline_positive,
+                       theta_positive, self.interval_b)[0]
 
-        rej_prob_positive = np.trapz(self.spline_positive(grid[theta_negative_idx:theta_positive_idx]),
-                                     x=grid[theta_negative_idx:theta_positive_idx])
-
-        rej_prob_negative = np.trapz(self.spline_negative(grid[theta_negative_idx:theta_positive_idx]),
-                                     x=grid[theta_negative_idx:theta_positive_idx])
+        rej_prob_positive = quad(self.spline_positive,
+                                 theta_negative, theta_positive)[0]
+        rej_prob_negative = quad(self.spline_negative,
+                                 theta_negative, theta_positive)[0]
 
         P_FN = self.prior_positive * fn_prob / (fn_prob + tn_prob)
         P_FP = self.prior_negative * fp_prob / (fp_prob + tp_prob)

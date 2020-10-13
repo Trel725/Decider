@@ -7,9 +7,8 @@ import glob
 from Decider import Decider
 import os
 import argparse
-parser = argparse.ArgumentParser()
-parser.add_argument("files", nargs="+", type=str, help="Files to predict")
-args = parser.parse_args()
+import natsort
+
 
 def cuda_memgrowth():
     # needed to initialize CUDA
@@ -35,10 +34,12 @@ def norm_func(x, a=0, b=1):
     # function, applied to each spectrum
     return ((b - a) * (x - min(x))) / (max(x) - min(x)) + a
 
+
 def read_preproc(file):
     sample = pd.read_csv(file)
     sample = sample.apply(norm_func, axis=1).values[:, :2089]
     return sample
+
 
 def load_by_parts(fname):
     # loads array, splitted into multiple files
@@ -57,7 +58,6 @@ def load_by_parts(fname):
     return np.concatenate(parts, axis=0)
 
 
-
 nnmodel = load_model("./data/model.h5",
                      custom_objects={"BSFilter": BSFilter})
 x_train = load_by_parts("./data/X_train")
@@ -74,13 +74,13 @@ for dirct in natsort.natsorted(glob.glob("./data/unknown/*")):
     if os.path.isdir(dirct):
         idx = int(os.path.basename(dirct))
         print(f"Reading unknown #{idx}")
-        for idx, file in enumerate(glob.glob(dirct+"/*.csv")):
+        samples = []
+        for idx, file in enumerate(glob.glob(dirct + "/*.csv")):
             print(f"  Found sample {idx}, {file}")
+            sample = read_preproc(file)
+            samples.append(sample)
 
-for file in sorted(args.files):
-    print(file)
-
-    decider.decide_samples([sample])
-    decider.visualize_sample()
-    plt.show()
-    print("-" * 10 + "\n")
+        decider.decide_samples(samples)
+        decider.visualize_sample()
+        plt.show()
+        print("-" * 10 + "\n")
